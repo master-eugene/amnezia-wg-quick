@@ -18,10 +18,10 @@ const copy = {
     lede: "Enter the admin account for this host. A successful sign-in lasts 12 hours.",
   },
   session: {
-    step: "Authorized",
-    eyebrow: "Session",
-    title: "This browser is authorized",
-    lede: "You can leave and come back until the session expires or you sign out.",
+    step: "Clients",
+    eyebrow: "Panel",
+    title: "Manage clients",
+    lede: "Create a client, change the name or access, or remove someone who should no longer connect.",
   },
 };
 
@@ -40,9 +40,18 @@ const els = {
   session: document.querySelector("#session-view"),
   setupError: document.querySelector("#setup-error"),
   loginError: document.querySelector("#login-error"),
-  signedName: document.querySelector("#signed-name"),
+  clientError: document.querySelector("#client-error"),
+  clientName: document.querySelector("#client-name"),
+  clientList: document.querySelector("#client-list"),
+  clientEmpty: document.querySelector("#client-empty"),
+  clientConfigWrap: document.querySelector("#client-config-wrap"),
+  clientConfigLabel: document.querySelector("#client-config-label"),
+  clientConfig: document.querySelector("#client-config"),
+  clientQr: document.querySelector("#client-qr"),
+  clientCopy: document.querySelector("#client-copy"),
   statusList: document.querySelector("#status-list"),
   toolHint: document.querySelector("#tool-hint"),
+  layout: document.querySelector(".layout"),
 };
 
 els.address.textContent = location.host;
@@ -101,12 +110,14 @@ function applyCopy(view) {
 
 function show(view) {
   applyCopy(view);
+  els.layout.classList.toggle("wide", view === "session");
   els.loading.hidden = view !== "loading";
   els.setup.hidden = view !== "setup";
   els.login.hidden = view !== "login";
   els.session.hidden = view !== "session";
   if (view === "setup") document.querySelector("#setup-username").focus();
   if (view === "login") document.querySelector("#login-username").focus();
+  if (view !== "session") hideConfig();
 }
 
 function paintAccount(state) {
@@ -170,13 +181,204 @@ document.querySelector("#setup-confirm").addEventListener("input", updateRules);
 els.setup.addEventListener("input", () => setAlert(els.setupError, ""));
 els.login.addEventListener("input", () => setAlert(els.loginError, ""));
 
+function hideConfig() {
+  delete els.clientConfigWrap.dataset.clientId;
+  delete els.clientConfigWrap.dataset.mode;
+  els.clientConfigWrap.hidden = true;
+  els.clientConfig.hidden = false;
+  els.clientConfig.textContent = "";
+  els.clientQr.hidden = true;
+  els.clientQr.removeAttribute("src");
+}
+
+function shareTitle(mode) {
+  if (mode === "link") return "link";
+  if (mode === "qr") return "QR code";
+  return "config";
+}
+
+function showShare(client, mode, text, svg) {
+  els.clientConfigWrap.dataset.clientId = String(client.id);
+  els.clientConfigWrap.dataset.mode = mode;
+  els.clientConfigLabel.textContent = `${client.name} ${shareTitle(mode)}`;
+  els.clientConfig.textContent = text;
+  els.clientConfig.hidden = mode === "qr";
+  if (mode === "qr" && svg) {
+    els.clientQr.hidden = false;
+    els.clientQr.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  } else {
+    els.clientQr.hidden = true;
+    els.clientQr.removeAttribute("src");
+  }
+  els.clientCopy.textContent = mode === "link" ? "Copy link" : "Copy config";
+  els.clientConfigWrap.hidden = false;
+}
+
+function miniButton(label, className) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className ? `mini ${className}` : "mini";
+  button.textContent = label;
+  return button;
+}
+
+function paintClients(clients) {
+  els.clientList.replaceChildren();
+  els.clientEmpty.hidden = clients.length > 0;
+  for (const client of clients) {
+    const item = document.createElement("li");
+    item.className = "client";
+    const top = document.createElement("div");
+    top.className = "client-top";
+    const name = document.createElement("p");
+    name.className = "client-name";
+    name.textContent = client.name;
+    const state = document.createElement("span");
+    state.dataset.state = client.enabled ? "ok" : "off";
+    state.textContent = client.enabled ? "Enabled" : "Disabled";
+    top.append(name, state);
+    const meta = document.createElement("p");
+    meta.className = "client-meta";
+    meta.textContent = client.address;
+    const actions = document.createElement("div");
+    actions.className = "client-actions";
+    const qr = miniButton("QR");
+    const link = miniButton("Link");
+    const config = miniButton("Config");
+    const change = miniButton("Change");
+    const access = miniButton(client.enabled ? "Disable" : "Enable");
+    const remove = miniButton("Remove", "danger");
+    qr.addEventListener("click", () => openShare(client, "qr"));
+    link.addEventListener("click", () => openShare(client, "link"));
+    config.addEventListener("click", () => openShare(client, "config"));
+    change.addEventListener("click", () => startRename(item, client));
+    access.addEventListener("click", () => setAccess(client, !client.enabled));
+    remove.addEventListener("click", () => startRemove(actions, client));
+    actions.append(qr, link, config, change, access, remove);
+    item.append(top, meta, actions);
+    els.clientList.append(item);
+  }
+}
+
+function startRename(item, client) {
+  const editor = document.createElement("form");
+  editor.className = "client-edit";
+  const input = document.createElement("input");
+  input.value = client.name;
+  input.maxLength = 32;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("aria-label", `New name for ${client.name}`);
+  const save = miniButton("Save");
+  save.type = "submit";
+  const cancel = miniButton("Cancel");
+  editor.append(input, save, cancel);
+  editor.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    save.disabled = true;
+    setAlert(els.clientError, "");
+    try {
+      await api(`/api/clients/${client.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: input.value.trim() }),
+      });
+      await loadClients();
+    } catch (error) {
+      setAlert(els.clientError, humanError(error));
+      save.disabled = false;
+    }
+  });
+  cancel.addEventListener("click", () => loadClients());
+  item.replaceChildren(editor);
+  input.focus();
+  input.select();
+}
+
+function startRemove(actions, client) {
+  actions.replaceChildren();
+  const prompt = document.createElement("span");
+  prompt.className = "client-meta";
+  prompt.textContent = `Remove ${client.name}?`;
+  const confirm = miniButton("Remove", "danger");
+  const cancel = miniButton("Cancel");
+  confirm.addEventListener("click", async () => {
+    confirm.disabled = true;
+    setAlert(els.clientError, "");
+    try {
+      await api(`/api/clients/${client.id}`, { method: "DELETE" });
+      await loadClients();
+    } catch (error) {
+      setAlert(els.clientError, humanError(error));
+      confirm.disabled = false;
+    }
+  });
+  cancel.addEventListener("click", () => loadClients());
+  actions.append(prompt, confirm, cancel);
+}
+
+async function setAccess(client, enabled) {
+  setAlert(els.clientError, "");
+  try {
+    await api(`/api/clients/${client.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    });
+    await loadClients();
+  } catch (error) {
+    setAlert(els.clientError, humanError(error));
+  }
+}
+
+async function openShare(client, mode) {
+  setAlert(els.clientError, "");
+  try {
+    const result = await api(`/api/clients/${client.id}/config`);
+    const owner = result.client || client;
+    if (mode === "qr") {
+      if (!result.qr) {
+        setAlert(els.clientError, "qrencode is not installed, so the QR code cannot be drawn.");
+        return;
+      }
+      showShare(owner, "qr", result.config || "", result.qr);
+      return;
+    }
+    if (mode === "link") {
+      showShare(owner, "link", result.link || "", "");
+      return;
+    }
+    showShare(owner, "config", result.config || "", "");
+  } catch (error) {
+    setAlert(els.clientError, humanError(error));
+  }
+}
+
+async function loadClients() {
+  const result = await api("/api/clients");
+  const clients = result.clients || [];
+  paintClients(clients);
+  const shown = els.clientConfigWrap.dataset.clientId;
+  const current = clients.find((client) => String(client.id) === shown);
+  if (shown && !current) hideConfig();
+  else if (current) {
+    els.clientConfigLabel.textContent = `${current.name} ${shareTitle(els.clientConfigWrap.dataset.mode)}`;
+  }
+  if (result.warning) setAlert(els.clientError, result.warning);
+}
+
 async function enterSession(state) {
   paintAccount(state);
-  els.signedName.textContent = state.user.username;
   show("session");
   clearSecrets();
+  setAlert(els.clientError, "");
   els.statusList.replaceChildren();
   els.toolHint.hidden = true;
+  try {
+    await loadClients();
+  } catch (error) {
+    els.clientList.replaceChildren();
+    els.clientEmpty.hidden = true;
+    setAlert(els.clientError, humanError(error));
+  }
   try {
     const status = await api("/api/status");
     const missing = [];
@@ -279,6 +481,41 @@ els.login.addEventListener("submit", async (event) => {
     button.disabled = false;
     button.textContent = "Sign in";
   }
+});
+
+document.querySelector("#client-add").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = els.clientName.value.trim();
+  const button = document.querySelector("#client-add-submit");
+  button.disabled = true;
+  setAlert(els.clientError, "");
+  try {
+    const result = await api("/api/clients", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    els.clientName.value = "";
+    if (result.client && result.config) showShare(result.client, "config", result.config, "");
+    if (result.warning) setAlert(els.clientError, result.warning);
+    await loadClients();
+  } catch (error) {
+    setAlert(els.clientError, humanError(error));
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.querySelector("#client-copy").addEventListener("click", async () => {
+  const button = document.querySelector("#client-copy");
+  try {
+    await navigator.clipboard.writeText(els.clientConfig.textContent);
+    button.textContent = "Copied";
+  } catch {
+    button.textContent = "Copy failed";
+  }
+  setTimeout(() => {
+    button.textContent = els.clientConfigWrap.dataset.mode === "link" ? "Copy link" : "Copy config";
+  }, 1600);
 });
 
 document.querySelector("#logout").addEventListener("click", async () => {

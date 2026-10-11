@@ -8,7 +8,10 @@ RUN npm ci --omit=dev --no-audit --no-fund
 COPY panel/server ./server
 COPY panel/public ./public
 
-RUN mkdir -p /data && chown -R node:node /app /data
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends util-linux \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /data && chown -R node:node /app /data
 
 ENV NODE_ENV=production \
     PORT=51821 \

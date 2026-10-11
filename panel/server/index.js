@@ -68,9 +68,62 @@ function publicState(req) {
   };
 }
 
+function hostCommand(command, args) {
+  if (process.env.AWQ_USE_NSENTER === "1") {
+    return spawnSync("nsenter", ["-t", "1", "-m", "-n", "--", command, ...args], {
+      encoding: "utf8",
+      timeout: 20000,
+    });
+  }
+  return spawnSync(command, args, { encoding: "utf8", timeout: 20000 });
+}
+
 function commandExists(bin) {
-  const result = spawnSync("sh", ["-c", 'command -v "$1"', "sh", bin], { encoding: "utf8" });
-  return result.status === 0 && result.stdout.trim().length > 0;
+  const result = hostCommand("sh", ["-c", 'command -v "$1"', "sh", bin]);
+  return !result.error && result.status === 0 && (result.stdout || "").trim().length > 0;
+}
+
+function stripAnsi(text) {
+  return String(text || "").replace(/\u001b\[[0-9;]*m/g, "").trim();
+}
+
+function awqJson(args) {
+  const result = hostCommand("awq", args);
+  if (result.error) {
+    const error = new Error(
+      result.error.code === "ENOENT" ? "awq is not available on this host." : "Could not run awq.",
+    );
+    error.status = 503;
+    throw error;
+  }
+  const stderr = stripAnsi(result.stderr);
+  const stdout = stripAnsi(result.stdout);
+  let payload = {};
+  if (stdout) {
+    try {
+      payload = JSON.parse(stdout);
+    } catch {
+      const error = new Error(stderr || "awq returned an unexpected response.");
+      error.status = 500;
+      throw error;
+    }
+  }
+  if (result.status !== 0) {
+    const error = new Error(stderr || "Could not update clients.");
+    error.status = result.status === 2 ? 400 : 500;
+    throw error;
+  }
+  if (stderr) payload.warning = stderr;
+  return payload;
+}
+
+function sendAwqError(res, error) {
+  const status = error.status || 500;
+  res.status(status).json({ error: status === 500 ? "Could not update clients." : error.message });
+}
+
+function clientId(raw) {
+  return /^[0-9]+$/.test(raw) ? raw : "";
 }
 
 function requireUser(req, res) {
@@ -106,6 +159,78 @@ api.get("/health", (_req, res) => {
 
 api.get("/session", (req, res) => {
   res.json(publicState(req));
+});
+
+api.get("/clients", (req, res) => {
+  if (!requireUser(req, res)) return;
+  try {
+    res.json(awqJson(["client", "list"]));
+  } catch (error) {
+    sendAwqError(res, error);
+  }
+});
+
+api.post("/clients", (req, res) => {
+  if (!guardOrigin(req, res) || !requireUser(req, res)) return;
+  const body = credentials(req.body);
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  try {
+    res.status(201).json(awqJson(["client", "add", "--name", name]));
+  } catch (error) {
+    sendAwqError(res, error);
+  }
+});
+
+api.patch("/clients/:id", (req, res) => {
+  if (!guardOrigin(req, res) || !requireUser(req, res)) return;
+  const id = clientId(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: "Enter a client id." });
+    return;
+  }
+  const body = credentials(req.body);
+  const hasName = typeof body.name === "string";
+  const hasEnabled = typeof body.enabled === "boolean";
+  if (!hasName && !hasEnabled) {
+    res.status(400).json({ error: "Nothing to change." });
+    return;
+  }
+  try {
+    let payload = {};
+    if (hasName) payload = awqJson(["client", "rename", "--id", id, "--name", body.name.trim()]);
+    if (hasEnabled) payload = awqJson(["client", body.enabled ? "enable" : "disable", "--id", id]);
+    res.json(payload);
+  } catch (error) {
+    sendAwqError(res, error);
+  }
+});
+
+api.delete("/clients/:id", (req, res) => {
+  if (!guardOrigin(req, res) || !requireUser(req, res)) return;
+  const id = clientId(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: "Enter a client id." });
+    return;
+  }
+  try {
+    res.json(awqJson(["client", "remove", "--id", id]));
+  } catch (error) {
+    sendAwqError(res, error);
+  }
+});
+
+api.get("/clients/:id/config", (req, res) => {
+  if (!requireUser(req, res)) return;
+  const id = clientId(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: "Enter a client id." });
+    return;
+  }
+  try {
+    res.json(awqJson(["client", "config", "--id", id]));
+  } catch (error) {
+    sendAwqError(res, error);
+  }
 });
 
 api.get("/status", (req, res) => {

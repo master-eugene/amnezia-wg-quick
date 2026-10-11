@@ -7,6 +7,13 @@ services:
       dockerfile: docker/Dockerfile
     image: amnezia-wg-quick:local
     restart: unless-stopped
+    pid: host
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    user: "0:0"
     ports:
       - "${AWG_UI_PORT:-51821}:51821"
     environment:
@@ -15,8 +22,11 @@ services:
       DATA_DIR: /data
       TRUST_PROXY: "${TRUST_PROXY:-0}"
       NODE_ENV: production
+      AWQ_USE_NSENTER: "1"
     volumes:
       - panel-data:/data
+      - /var/lib/amnezia-wg-quick/host-tools/awg:/usr/local/bin/awg:ro
+      - /var/lib/amnezia-wg-quick/host-tools/awg-quick:/usr/local/bin/awg-quick:ro
     healthcheck:
       test:
         [

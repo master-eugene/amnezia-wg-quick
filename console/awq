@@ -5,8 +5,10 @@ import base64
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +19,13 @@ LISTEN_PORT = 51820
 P = 2**255 - 19
 A24 = 121665
 BASE_POINT = bytes([9]) + bytes(31)
+
+
+JSON_MODE = False
+
+
+def say(message):
+    print(message, file=sys.stderr if JSON_MODE else sys.stdout)
 
 
 def dye(text, code):
@@ -342,7 +351,7 @@ def restart_interface(path):
     run(["awg-quick", "down", str(path)], capture_output=True)
     started = run(["awg-quick", "up", str(path)], capture_output=True)
     if started.returncode != 0:
-        print(red(started.stderr.strip() or "The interface did not start. Client records were saved."))
+        say(red(started.stderr.strip() or "The interface did not start. Client records were saved."))
 
 
 def apply_config(state):
@@ -358,11 +367,11 @@ def apply_config(state):
             return
         stripped = run(["awg-quick", "strip", str(path)], capture_output=True)
         if stripped.returncode != 0:
-            print(red(stripped.stderr.strip() or "Could not update the running interface."))
+            say(red(stripped.stderr.strip() or "Could not update the running interface."))
             return
         synced = run(["awg", "syncconf", IFACE, "/dev/stdin"], input=stripped.stdout, capture_output=True)
         if synced.returncode != 0:
-            print(red(synced.stderr.strip() or "Could not sync the interface."))
+            say(red(synced.stderr.strip() or "Could not sync the interface."))
         return
     if command_exists("systemctl") and path == Path("/etc/amnezia/amneziawg") / f"{IFACE}.conf":
         started = run(["systemctl", "enable", "--now", f"awg-quick@{IFACE}"], capture_output=True)
@@ -370,7 +379,7 @@ def apply_config(state):
             return
     started = run(["awg-quick", "up", str(path)], capture_output=True)
     if started.returncode != 0:
-        print(red(started.stderr.strip() or "The interface did not start. Client records were saved."))
+        say(red(started.stderr.strip() or "The interface did not start. Client records were saved."))
 
 
 def status_word(client):
@@ -406,15 +415,18 @@ def pause():
         ask("Press Enter to return. ")
 
 
-def valid_name(name, state):
+def valid_name(name, state, ignore_id=None):
     if not name:
-        return "Enter a client name, or leave it empty to go back."
+        return "Enter a client name."
     if len(name) > 32:
         return "Use 32 characters or fewer."
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-")
     if any(ch not in allowed for ch in name):
         return "Use letters, numbers, spaces, dots, dashes, and underscores."
-    if any(client["name"].casefold() == name.casefold() for client in state["clients"]):
+    if any(
+        client["name"].casefold() == name.casefold() and client["id"] != ignore_id
+        for client in state["clients"]
+    ):
         return "That name is already in use."
     return ""
 
@@ -460,7 +472,7 @@ def cmd_add(state):
             return
         error = valid_name(name, state)
         if error and name:
-            if error.startswith("Enter a client name"):
+            if error == "Enter a client name.":
                 return
             print(red(error))
             continue
@@ -498,11 +510,92 @@ def cmd_status(state):
     print(lime(f"{client['name']} is now {status_word(client)}."))
 
 
+def qcompress(data):
+    return struct.pack(">I", len(data)) + zlib.compress(data)
+
+
+def client_link(state, client):
+    server = state["server"]
+    conf = render_client(state, client)
+    host = server["endpoint"]
+    port = int(server["listen_port"])
+    last = {
+        "config": conf,
+        "hostName": host,
+        "port": port,
+        "client_priv_key": client["private_key"],
+        "client_ip": client["address"],
+        "server_pub_key": server["public_key"],
+        "allowed_ips": ["0.0.0.0/0"],
+        "persistent_keep_alive": "25",
+        "Jc": str(server["jc"]),
+        "Jmin": str(server["jmin"]),
+        "Jmax": str(server["jmax"]),
+        "S1": str(server["s1"]),
+        "S2": str(server["s2"]),
+        "H1": str(server["h1"]),
+        "H2": str(server["h2"]),
+        "H3": str(server["h3"]),
+        "H4": str(server["h4"]),
+        "isObfuscationEnabled": True,
+    }
+    envelope = {
+        "hostName": host,
+        "description": client["name"],
+        "defaultContainer": "amnezia-awg",
+        "dns1": server.get("dns") or "1.1.1.1",
+        "containers": [
+            {
+                "container": "amnezia-awg",
+                "awg": {
+                    "last_config": json.dumps(last, separators=(",", ":")),
+                    "port": str(port),
+                    "transport_proto": "udp",
+                    "isThirdPartyConfig": True,
+                },
+            }
+        ],
+    }
+    raw = json.dumps(envelope, separators=(",", ":")).encode()
+    token = base64.urlsafe_b64encode(qcompress(raw)).decode().rstrip("=")
+    return f"vpn://{token}"
+
+
+def qr_svg(text):
+    if not command_exists("qrencode"):
+        return ""
+    drawn = run(["qrencode", "-t", "SVG", "-o", "-"], input=text, capture_output=True)
+    svg = drawn.stdout or ""
+    if drawn.returncode != 0 or "<svg" not in svg:
+        return ""
+    return svg
+
+
+def share_payload(state, client):
+    conf = render_client(state, client)
+    return {
+        "client": public_client(client),
+        "config": conf,
+        "link": client_link(state, client),
+        "qr": qr_svg(conf),
+    }
+
+
 def show_text(state, client):
     print()
     print(dim(f"{client['name']} (id {client['id']}, {status_word(client)})"))
     print()
     print(render_client(state, client), end="")
+    print()
+    pause()
+
+
+def show_link(state, client):
+    print()
+    print(dim(f"{client['name']} (id {client['id']}, {status_word(client)})"))
+    print(dim("AmneziaVPN import link"))
+    print()
+    print(client_link(state, client))
     print()
     pause()
 
@@ -531,19 +624,22 @@ def cmd_info(state):
         print()
         print(bold(f"{client['name']} · id {client['id']} · {status_word(client)}"))
         print()
-        print(f"  {lime('1')}  Show QR config")
-        print(f"  {lime('2')}  Show text config")
-        print(f"  {lime('3')}  Back")
+        print(f"  {lime('1')}  Show QR code")
+        print(f"  {lime('2')}  Show link")
+        print(f"  {lime('3')}  Show text config")
+        print(f"  {lime('4')}  Back")
         print()
         choice = ask("Choice: ")
         if choice == "1":
             show_qr(state, client)
         elif choice == "2":
+            show_link(state, client)
+        elif choice == "3":
             show_text(state, client)
-        elif choice == "3" or choice == "":
+        elif choice == "4" or choice == "":
             return
         else:
-            print(red("Choose 1, 2, or 3."))
+            print(red("Choose 1, 2, 3, or 4."))
 
 
 def cmd_remove(state):
@@ -591,6 +687,120 @@ def menu(state):
         action[1](state)
 
 
+def public_client(client):
+    return {
+        "id": client["id"],
+        "name": client["name"],
+        "enabled": bool(client["enabled"]),
+        "address": client["address"],
+        "created_at": client.get("created_at", ""),
+    }
+
+
+def option_value(argv, flag):
+    if flag not in argv:
+        return None
+    index = argv.index(flag)
+    if index + 1 >= len(argv):
+        return ""
+    return argv[index + 1]
+
+
+def client_fail(message, code=1):
+    print(message, file=sys.stderr)
+    return code
+
+
+def require_saved_client(state, raw):
+    if raw is None or not str(raw).isdigit():
+        return None, "Enter a client id."
+    client = find_client(state, str(raw))
+    if client is None:
+        return None, "No client with that id."
+    return client, ""
+
+
+def client_cli(argv):
+    global JSON_MODE
+    JSON_MODE = True
+    if len(argv) < 2:
+        return client_fail("Usage: awq client list|add|rename|enable|disable|remove|config", 2)
+    action = argv[1]
+    args = argv[2:]
+    state = load_state()
+    if action == "list":
+        if args:
+            return client_fail("Usage: awq client list", 2)
+        print(json.dumps({"clients": [public_client(client) for client in sorted_clients(state)]}))
+        return 0
+    if action == "add":
+        name = option_value(args, "--name")
+        if name is None:
+            return client_fail("Usage: awq client add --name NAME", 2)
+        error = valid_name(name, state)
+        if error:
+            return client_fail(error, 2)
+        server = state["server"]
+        if server["next_ip"] > 254:
+            return client_fail("The address pool is full.", 2)
+        private, public = keypair()
+        client = {
+            "id": server["next_id"],
+            "name": name,
+            "enabled": True,
+            "private_key": private,
+            "public_key": public,
+            "address": client_address(server["next_ip"]),
+            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        server["next_id"] += 1
+        server["next_ip"] += 1
+        state["clients"].append(client)
+        save_state(state)
+        apply_config(state)
+        print(json.dumps(share_payload(state, client)))
+        return 0
+    if action == "rename":
+        client, error = require_saved_client(state, option_value(args, "--id"))
+        if error:
+            return client_fail(error, 2)
+        name = option_value(args, "--name")
+        if name is None:
+            return client_fail("Usage: awq client rename --id ID --name NAME", 2)
+        error = valid_name(name, state, client["id"])
+        if error:
+            return client_fail(error, 2)
+        client["name"] = name
+        save_state(state)
+        print(json.dumps({"client": public_client(client)}))
+        return 0
+    if action in ("enable", "disable"):
+        client, error = require_saved_client(state, option_value(args, "--id"))
+        if error:
+            return client_fail(error, 2)
+        client["enabled"] = action == "enable"
+        save_state(state)
+        apply_config(state)
+        print(json.dumps({"client": public_client(client)}))
+        return 0
+    if action == "remove":
+        client, error = require_saved_client(state, option_value(args, "--id"))
+        if error:
+            return client_fail(error, 2)
+        state["clients"] = [item for item in state["clients"] if item["id"] != client["id"]]
+        save_state(state)
+        apply_config(state)
+        print(json.dumps({"ok": True}))
+        return 0
+    if action == "config":
+        client, error = require_saved_client(state, option_value(args, "--id"))
+        if error:
+            return client_fail(error, 2)
+        print(json.dumps(share_payload(state, client)))
+        return 0
+    return client_fail("Usage: awq client list|add|rename|enable|disable|remove|config", 2)
+
+
 def print_help():
     print(
         """Usage: awq
@@ -598,6 +808,8 @@ def print_help():
 Open the client menu. The installer also runs awq --init, which creates
 the server keys once and leaves existing clients in place.
 AWQ_LISTEN_PORT sets the UDP listen port during --init.
+
+The panel uses awq client list, add, rename, enable, disable, remove, and config.
 """
     )
 
@@ -606,6 +818,8 @@ def main(argv):
     if any(arg in ("-h", "--help", "help") for arg in argv):
         print_help()
         return 0
+    if argv and argv[0] == "client":
+        return client_cli(argv)
     if argv not in ([], ["--init"]):
         print(red(f"Unknown option: {' '.join(argv)}"), file=sys.stderr)
         return 1

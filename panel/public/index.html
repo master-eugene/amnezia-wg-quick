@@ -102,11 +102,25 @@
 
           <section id="session-view" hidden>
             <div class="form-head">
-              <h2>Signed in</h2>
-              <p>This browser holds a session for the next 12 hours.</p>
+              <h2>Clients</h2>
+              <p>Add someone, change the name or access, or remove a client.</p>
             </div>
-            <p class="signed-label">Account</p>
-            <p class="signed-name" id="signed-name"></p>
+            <p class="alert" id="client-error" hidden></p>
+            <form id="client-add" class="add-client">
+              <label class="field">
+                <span>New client</span>
+                <input id="client-name" name="name" maxlength="32" autocomplete="off" spellcheck="false" placeholder="Phone" />
+              </label>
+              <button class="primary" id="client-add-submit" type="submit">Add</button>
+            </form>
+            <p class="empty" id="client-empty" hidden>No clients yet.</p>
+            <ul class="clients" id="client-list"></ul>
+            <div id="client-config-wrap" hidden>
+              <p class="signed-label" id="client-config-label">Config</p>
+              <img id="client-qr" class="qr" alt="Client QR code" hidden />
+              <pre class="config" id="client-config"></pre>
+              <button class="secondary" id="client-copy" type="button">Copy config</button>
+            </div>
             <ul class="status" id="status-list"></ul>
             <p class="hint" id="tool-hint" hidden></p>
             <button class="secondary" id="logout" type="button">Sign out</button>
