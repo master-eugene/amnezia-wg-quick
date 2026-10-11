@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="color-scheme" content="dark" />
+    <title>AmneziaWG Quick</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="stage">
+      <header class="top">
+        <a class="brand" href="/">
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+            <rect x="1.5" y="1.5" width="29" height="29" rx="9" fill="none" stroke="currentColor" stroke-width="1.5" />
+            <path d="M9 16h14M17 10l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span>AmneziaWG Quick</span>
+        </a>
+        <p class="step" id="step-label">Checking</p>
+      </header>
+
+      <main class="layout">
+        <section class="intro">
+          <p class="eyebrow" id="eyebrow">Host panel</p>
+          <h1 id="title">Checking this host</h1>
+          <p class="lede" id="lede">Looking up whether an admin account already exists.</p>
+          <dl class="specs">
+            <div>
+              <dt>Machine</dt>
+              <dd id="spec-machine">…</dd>
+            </div>
+            <div>
+              <dt>Address</dt>
+              <dd id="spec-address"></dd>
+            </div>
+            <div>
+              <dt>Account</dt>
+              <dd id="spec-account">Checking</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel" aria-live="polite">
+          <p class="loading" id="loading">
+            <span class="led" aria-hidden="true"></span>
+            Checking this host…
+          </p>
+          <p class="alert" id="banner" hidden></p>
+
+          <form id="setup-form" hidden novalidate>
+            <div class="form-head">
+              <h2>New admin</h2>
+              <p>This is the only account that can open the panel.</p>
+            </div>
+            <p class="alert" id="setup-error" hidden></p>
+            <label class="field">
+              <span>Username</span>
+              <input id="setup-username" name="username" autocomplete="username" spellcheck="false" maxlength="32" />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <span class="secret">
+                <input id="setup-password" name="password" type="password" autocomplete="new-password" maxlength="200" />
+                <button class="texty" type="button" data-toggle="setup-password" aria-controls="setup-password" aria-pressed="false">Show</button>
+              </span>
+            </label>
+            <label class="field">
+              <span>Confirm password</span>
+              <input id="setup-confirm" name="confirm" type="password" autocomplete="new-password" maxlength="200" />
+            </label>
+            <ul class="rules" id="rules">
+              <li data-rule="length">At least 10 characters</li>
+              <li data-rule="letter">One letter</li>
+              <li data-rule="number">One number</li>
+              <li data-rule="match">Both passwords match</li>
+            </ul>
+            <button class="primary" id="setup-submit" type="submit">Create account</button>
+          </form>
+
+          <form id="login-form" hidden novalidate>
+            <div class="form-head">
+              <h2>Admin sign-in</h2>
+              <p>Use the account created on first run.</p>
+            </div>
+            <p class="alert" id="login-error" hidden></p>
+            <label class="field">
+              <span>Username</span>
+              <input id="login-username" name="username" autocomplete="username" spellcheck="false" maxlength="32" />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <span class="secret">
+                <input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="200" />
+                <button class="texty" type="button" data-toggle="login-password" aria-controls="login-password" aria-pressed="false">Show</button>
+              </span>
+            </label>
+            <button class="primary" id="login-submit" type="submit">Sign in</button>
+          </form>
+
+          <section id="session-view" hidden>
+            <div class="form-head">
+              <h2>Signed in</h2>
+              <p>This browser holds a session for the next 12 hours.</p>
+            </div>
+            <p class="signed-label">Account</p>
+            <p class="signed-name" id="signed-name"></p>
+            <ul class="status" id="status-list"></ul>
+            <p class="hint" id="tool-hint" hidden></p>
+            <button class="secondary" id="logout" type="button">Sign out</button>
+          </section>
+        </section>
+      </main>
+
+      <footer class="foot">
+        <p>Reach this panel through a network you trust, or put it behind HTTPS.</p>
+        <p>v0.1.0</p>
+      </footer>
+    </div>
+    <noscript>
+      <p class="noscript">Enable JavaScript to create the admin account and sign in.</p>
+    </noscript>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

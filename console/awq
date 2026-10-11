@@ -1,0 +1,629 @@
+#!/usr/bin/env python3
+"""Console menu for AmneziaWG Quick clients."""
+
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+IFACE = "awg0"
+SUBNET = "10.8.0.0/24"
+SERVER_ADDRESS = "10.8.0.1/24"
+LISTEN_PORT = 51820
+P = 2**255 - 19
+A24 = 121665
+BASE_POINT = bytes([9]) + bytes(31)
+
+
+def dye(text, code):
+    if not sys.stdout.isatty():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def bold(text):
+    return dye(text, "1")
+
+
+def lime(text):
+    return dye(text, "1;38;5;190")
+
+
+def red(text):
+    return dye(text, "38;5;210")
+
+
+def dim(text):
+    return dye(text, "2")
+
+
+def data_dir():
+    override = os.environ.get("AWQ_DATA_DIR")
+    if override:
+        return Path(override)
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        sys.exit("Run awq as root.")
+    return Path("/var/lib/amnezia-wg-quick")
+
+
+def state_path():
+    return data_dir() / "state.json"
+
+
+def conf_path():
+    override = os.environ.get("AWQ_CONF")
+    if override:
+        return Path(override)
+    if os.environ.get("AWQ_DATA_DIR"):
+        return data_dir() / "awg0.conf"
+    return Path("/etc/amnezia/amneziawg") / f"{IFACE}.conf"
+
+
+def x25519(scalar, point):
+    key = bytearray(scalar)
+    key[0] &= 248
+    key[31] &= 127
+    key[31] |= 64
+    k = int.from_bytes(key, "little")
+    u = bytearray(point)
+    u[31] &= 127
+    x1 = int.from_bytes(u, "little")
+    x2, z2, x3, z3, swap = 1, 0, x1, 1, 0
+    for bit in range(254, -1, -1):
+        kt = (k >> bit) & 1
+        swap ^= kt
+        if swap:
+            x2, x3 = x3, x2
+            z2, z3 = z3, z2
+        swap = kt
+        a = (x2 + z2) % P
+        aa = (a * a) % P
+        b = (x2 - z2) % P
+        bb = (b * b) % P
+        e = (aa - bb) % P
+        c = (x3 + z3) % P
+        d = (x3 - z3) % P
+        da = (d * a) % P
+        cb = (c * b) % P
+        x3 = pow(da + cb, 2, P)
+        z3 = (x1 * pow(da - cb, 2, P)) % P
+        x2 = (aa * bb) % P
+        z2 = (e * (aa + A24 * e)) % P
+    if swap:
+        x2, z2 = x3, z3
+    return int(x2 * pow(z2, P - 2, P) % P).to_bytes(32, "little")
+
+
+def b64(raw):
+    return base64.b64encode(raw).decode("ascii")
+
+
+def keypair():
+    private = bytearray(os.urandom(32))
+    private[0] &= 248
+    private[31] &= 127
+    private[31] |= 64
+    private = bytes(private)
+    return b64(private), b64(x25519(private, BASE_POINT))
+
+
+def public_from_private(private_b64):
+    raw = base64.b64decode(private_b64)
+    return b64(x25519(raw, BASE_POINT))
+
+
+def run(args, **kwargs):
+    try:
+        return subprocess.run(args, check=False, text=True, **kwargs)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(args, 127, stdout="", stderr="")
+
+
+def command_exists(name):
+    return shutil.which(name) is not None
+
+
+def detect_endpoint():
+    forced = os.environ.get("AWQ_ENDPOINT", "").strip()
+    if forced:
+        return forced
+    result = run(["ip", "-4", "route", "get", "1.1.1.1"], capture_output=True)
+    parts = (result.stdout or "").split()
+    if result.returncode == 0 and "src" in parts:
+        return parts[parts.index("src") + 1]
+    return "127.0.0.1"
+
+
+def default_iface():
+    result = run(["ip", "-4", "route", "show", "default"], capture_output=True)
+    parts = (result.stdout or "").split()
+    if result.returncode != 0 or "dev" not in parts:
+        return ""
+    iface = parts[parts.index("dev") + 1]
+    if iface and all(ch.isalnum() or ch in "._:-" for ch in iface):
+        return iface
+    return ""
+
+
+def distinct_h():
+    values = set()
+    while len(values) < 4:
+        values.add(int.from_bytes(os.urandom(4), "little") | 1)
+    return list(values)
+
+
+def listen_port_from_env():
+    raw = os.environ.get("AWQ_LISTEN_PORT", "").strip()
+    if not raw:
+        return None
+    if not raw.isdigit():
+        sys.exit("AWQ_LISTEN_PORT must be a port from 1 to 65535.")
+    port = int(raw)
+    if port < 1 or port > 65535:
+        sys.exit("AWQ_LISTEN_PORT must be a port from 1 to 65535.")
+    return port
+
+
+def new_state():
+    private, public = keypair()
+    h1, h2, h3, h4 = distinct_h()
+    s1 = 15 + (os.urandom(1)[0] % 100)
+    s2 = 15 + (os.urandom(1)[0] % 100)
+    if s2 == s1:
+        s2 = s1 + 17
+    return {
+        "version": 1,
+        "server": {
+            "private_key": private,
+            "public_key": public,
+            "address": SERVER_ADDRESS,
+            "listen_port": listen_port_from_env() or LISTEN_PORT,
+            "endpoint": detect_endpoint(),
+            "dns": "1.1.1.1",
+            "jc": 4,
+            "jmin": 40,
+            "jmax": 70,
+            "s1": s1,
+            "s2": s2,
+            "h1": h1,
+            "h2": h2,
+            "h3": h3,
+            "h4": h4,
+            "next_ip": 2,
+            "next_id": 1,
+        },
+        "clients": [],
+    }
+
+
+def load_state():
+    path = state_path()
+    if not path.exists():
+        state = new_state()
+        save_state(state)
+        apply_config(state)
+        return state
+    return json.loads(path.read_text())
+
+
+def save_state(state):
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(state, indent=2) + "\n")
+    os.chmod(temp, 0o600)
+    temp.replace(path)
+
+
+def client_address(host):
+    return f"10.8.0.{host}/32"
+
+
+def render_server(state):
+    server = state["server"]
+    lines = [
+        "[Interface]",
+        f"PrivateKey = {server['private_key']}",
+        f"Address = {server['address']}",
+        f"ListenPort = {server['listen_port']}",
+        f"Jc = {server['jc']}",
+        f"Jmin = {server['jmin']}",
+        f"Jmax = {server['jmax']}",
+        f"S1 = {server['s1']}",
+        f"S2 = {server['s2']}",
+        f"H1 = {server['h1']}",
+        f"H2 = {server['h2']}",
+        f"H3 = {server['h3']}",
+        f"H4 = {server['h4']}",
+    ]
+    iface = default_iface()
+    if iface:
+        lines.append(
+            "PostUp = "
+            f"iptables -A FORWARD -i {IFACE} -j ACCEPT; "
+            f"iptables -A FORWARD -o {IFACE} -j ACCEPT; "
+            f"iptables -t nat -A POSTROUTING -o {iface} -j MASQUERADE"
+        )
+        lines.append(
+            "PostDown = "
+            f"iptables -D FORWARD -i {IFACE} -j ACCEPT; "
+            f"iptables -D FORWARD -o {IFACE} -j ACCEPT; "
+            f"iptables -t nat -D POSTROUTING -o {iface} -j MASQUERADE"
+        )
+    for client in state["clients"]:
+        if not client["enabled"]:
+            continue
+        lines.extend(
+            [
+                "",
+                "[Peer]",
+                f"PublicKey = {client['public_key']}",
+                f"AllowedIPs = {client['address']}",
+            ]
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_client(state, client):
+    server = state["server"]
+    return "\n".join(
+        [
+            "[Interface]",
+            f"PrivateKey = {client['private_key']}",
+            f"Address = {client['address']}",
+            f"DNS = {server['dns']}",
+            f"Jc = {server['jc']}",
+            f"Jmin = {server['jmin']}",
+            f"Jmax = {server['jmax']}",
+            f"S1 = {server['s1']}",
+            f"S2 = {server['s2']}",
+            f"H1 = {server['h1']}",
+            f"H2 = {server['h2']}",
+            f"H3 = {server['h3']}",
+            f"H4 = {server['h4']}",
+            "",
+            "[Peer]",
+            f"PublicKey = {server['public_key']}",
+            f"Endpoint = {server['endpoint']}:{server['listen_port']}",
+            "AllowedIPs = 0.0.0.0/0",
+            "PersistentKeepalive = 25",
+            "",
+        ]
+    )
+
+
+def write_conf(state):
+    path = conf_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    temp = path.with_suffix(".tmp")
+    temp.write_text(render_server(state))
+    os.chmod(temp, 0o600)
+    temp.replace(path)
+
+
+def interface_up():
+    if not command_exists("awg"):
+        return False
+    return run(["awg", "show", IFACE], capture_output=True).returncode == 0
+
+
+def running_listen_port():
+    result = run(["awg", "show", IFACE], capture_output=True)
+    if result.returncode != 0:
+        return None
+    prefix = "listening port:"
+    for line in (result.stdout or "").splitlines():
+        text = line.strip()
+        if text.startswith(prefix):
+            try:
+                return int(text[len(prefix):].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def restart_interface(path):
+    unit = f"awg-quick@{IFACE}"
+    standard = path == Path("/etc/amnezia/amneziawg") / f"{IFACE}.conf"
+    if standard and command_exists("systemctl"):
+        restarted = run(["systemctl", "restart", unit], capture_output=True)
+        if restarted.returncode == 0:
+            return
+    run(["awg-quick", "down", str(path)], capture_output=True)
+    started = run(["awg-quick", "up", str(path)], capture_output=True)
+    if started.returncode != 0:
+        print(red(started.stderr.strip() or "The interface did not start. Client records were saved."))
+
+
+def apply_config(state):
+    write_conf(state)
+    if not command_exists("awg") or not command_exists("awg-quick"):
+        return
+    path = conf_path()
+    if interface_up():
+        current = running_listen_port()
+        wanted = int(state["server"]["listen_port"])
+        if current is not None and current != wanted:
+            restart_interface(path)
+            return
+        stripped = run(["awg-quick", "strip", str(path)], capture_output=True)
+        if stripped.returncode != 0:
+            print(red(stripped.stderr.strip() or "Could not update the running interface."))
+            return
+        synced = run(["awg", "syncconf", IFACE, "/dev/stdin"], input=stripped.stdout, capture_output=True)
+        if synced.returncode != 0:
+            print(red(synced.stderr.strip() or "Could not sync the interface."))
+        return
+    if command_exists("systemctl") and path == Path("/etc/amnezia/amneziawg") / f"{IFACE}.conf":
+        started = run(["systemctl", "enable", "--now", f"awg-quick@{IFACE}"], capture_output=True)
+        if started.returncode == 0:
+            return
+    started = run(["awg-quick", "up", str(path)], capture_output=True)
+    if started.returncode != 0:
+        print(red(started.stderr.strip() or "The interface did not start. Client records were saved."))
+
+
+def status_word(client):
+    return "enabled" if client["enabled"] else "disabled"
+
+
+def sorted_clients(state):
+    return sorted(state["clients"], key=lambda client: client["id"])
+
+
+def print_clients(state):
+    clients = sorted_clients(state)
+    if not clients:
+        print("No clients yet.")
+        return
+    print(f"  {bold('ID'):<6}  {bold('Name'):<24}  {bold('Status')}")
+    for client in clients:
+        label = status_word(client)
+        colored = lime(label) if client["enabled"] else red(label)
+        print(f"  {client['id']:<6}  {client['name']:<24}  {colored}")
+
+
+def ask(prompt):
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        print()
+        raise SystemExit(0) from None
+
+
+def pause():
+    if sys.stdin.isatty():
+        ask("Press Enter to return. ")
+
+
+def valid_name(name, state):
+    if not name:
+        return "Enter a client name, or leave it empty to go back."
+    if len(name) > 32:
+        return "Use 32 characters or fewer."
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-")
+    if any(ch not in allowed for ch in name):
+        return "Use letters, numbers, spaces, dots, dashes, and underscores."
+    if any(client["name"].casefold() == name.casefold() for client in state["clients"]):
+        return "That name is already in use."
+    return ""
+
+
+def find_client(state, raw):
+    if not raw.isdigit():
+        return None
+    wanted = int(raw)
+    for client in state["clients"]:
+        if client["id"] == wanted:
+            return client
+    return None
+
+
+def pick_client(state):
+    if not state["clients"]:
+        print("No clients yet.")
+        return None
+    print_clients(state)
+    print()
+    raw = ask("Client id (empty to go back): ")
+    if not raw:
+        return None
+    client = find_client(state, raw)
+    if client is None:
+        print(red("No client with that id."))
+        return None
+    return client
+
+
+def cmd_list(state):
+    print()
+    print_clients(state)
+    print()
+    pause()
+
+
+def cmd_add(state):
+    print()
+    while True:
+        name = ask("Client name (empty to go back): ")
+        if not name:
+            return
+        error = valid_name(name, state)
+        if error and name:
+            if error.startswith("Enter a client name"):
+                return
+            print(red(error))
+            continue
+        break
+    server = state["server"]
+    if server["next_ip"] > 254:
+        print(red("The address pool is full."))
+        return
+    private, public = keypair()
+    client = {
+        "id": server["next_id"],
+        "name": name,
+        "enabled": True,
+        "private_key": private,
+        "public_key": public,
+        "address": client_address(server["next_ip"]),
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    server["next_id"] += 1
+    server["next_ip"] += 1
+    state["clients"].append(client)
+    save_state(state)
+    apply_config(state)
+    print(lime(f"Added {name} (id {client['id']}), enabled."))
+
+
+def cmd_status(state):
+    print()
+    client = pick_client(state)
+    if client is None:
+        return
+    client["enabled"] = not client["enabled"]
+    save_state(state)
+    apply_config(state)
+    print(lime(f"{client['name']} is now {status_word(client)}."))
+
+
+def show_text(state, client):
+    print()
+    print(dim(f"{client['name']} (id {client['id']}, {status_word(client)})"))
+    print()
+    print(render_client(state, client), end="")
+    print()
+    pause()
+
+
+def show_qr(state, client):
+    print()
+    if not command_exists("qrencode"):
+        print(red("qrencode is not installed, so the QR code cannot be drawn."))
+        print("The text config is still available.")
+        pause()
+        return
+    print(dim(f"{client['name']} (id {client['id']}, {status_word(client)})"))
+    print()
+    drawn = run(["qrencode", "-t", "UTF8", "-o", "-"], input=render_client(state, client))
+    if drawn.returncode != 0:
+        print(red("Could not draw the QR code."))
+    pause()
+
+
+def cmd_info(state):
+    print()
+    client = pick_client(state)
+    if client is None:
+        return
+    while True:
+        print()
+        print(bold(f"{client['name']} · id {client['id']} · {status_word(client)}"))
+        print()
+        print(f"  {lime('1')}  Show QR config")
+        print(f"  {lime('2')}  Show text config")
+        print(f"  {lime('3')}  Back")
+        print()
+        choice = ask("Choice: ")
+        if choice == "1":
+            show_qr(state, client)
+        elif choice == "2":
+            show_text(state, client)
+        elif choice == "3" or choice == "":
+            return
+        else:
+            print(red("Choose 1, 2, or 3."))
+
+
+def cmd_remove(state):
+    print()
+    client = pick_client(state)
+    if client is None:
+        return
+    print()
+    print(f"Remove {bold(client['name'])} (id {client['id']})? This cannot be undone.")
+    answer = ask("Type yes to confirm: ")
+    if answer != "yes":
+        print("Cancelled.")
+        return
+    state["clients"] = [item for item in state["clients"] if item["id"] != client["id"]]
+    save_state(state)
+    apply_config(state)
+    print(lime(f"Removed {client['name']}."))
+
+
+def menu(state):
+    actions = {
+        "1": ("Current clients", cmd_list),
+        "2": ("Add client", cmd_add),
+        "3": ("Change status", cmd_status),
+        "4": ("Client info", cmd_info),
+        "5": ("Remove client", cmd_remove),
+    }
+    while True:
+        print()
+        print(bold("AmneziaWG Quick"))
+        print(dim(f"{state['server']['endpoint']}:{state['server']['listen_port']}"))
+        print()
+        for number, (label, _action) in actions.items():
+            print(f"  {lime(number)}  {label}")
+        print(f"  {lime('6')}  Exit")
+        print()
+        choice = ask("Choice: ")
+        if choice == "6":
+            print("Bye.")
+            return
+        action = actions.get(choice)
+        if action is None:
+            print(red("Choose 1 through 6."))
+            continue
+        action[1](state)
+
+
+def print_help():
+    print(
+        """Usage: awq
+
+Open the client menu. The installer also runs awq --init, which creates
+the server keys once and leaves existing clients in place.
+AWQ_LISTEN_PORT sets the UDP listen port during --init.
+"""
+    )
+
+
+def main(argv):
+    if any(arg in ("-h", "--help", "help") for arg in argv):
+        print_help()
+        return 0
+    if argv not in ([], ["--init"]):
+        print(red(f"Unknown option: {' '.join(argv)}"), file=sys.stderr)
+        return 1
+    state = load_state()
+    if argv == ["--init"]:
+        chosen = listen_port_from_env()
+        if chosen is not None and state["server"].get("listen_port") != chosen:
+            state["server"]["listen_port"] = chosen
+            save_state(state)
+        apply_config(state)
+        return 0
+    menu(state)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        print()
+        sys.exit(130)

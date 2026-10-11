@@ -1,0 +1,19 @@
+{
+  "name": "amnezia-wg-quick",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web admin panel for AmneziaWG Quick.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "@fontsource/manrope": "^5.2.8",
+    "@fontsource/syne": "^5.2.7",
+    "express": "^4.21.2"
+  }
+}
