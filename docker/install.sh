@@ -14,7 +14,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/lib/common.sh"
 
 COMPOSE_FILE="$ROOT/docker/docker-compose.yml"
-HOST_TOOLS_DIR=/var/lib/amnezia-wg-quick/host-tools
 PORT=51821
 
 usage() {
@@ -85,28 +84,9 @@ install_docker() {
   fi
 }
 
-prepare_host_tools() {
-  mkdir -p "$HOST_TOOLS_DIR"
-  local name src dest
-  for name in awg awg-quick; do
-    dest="$HOST_TOOLS_DIR/$name"
-    if [[ -d "$dest" ]]; then
-      rm -rf "$dest"
-    fi
-    [[ -f "$dest" ]] || : > "$dest"
-    src="$(command -v "$name" 2>/dev/null || true)"
-    if [[ -n "$src" && -x "$src" ]]; then
-      if [[ "$src" != "$dest" ]]; then
-        cat "$src" > "$dest"
-      fi
-      chmod 755 "$dest"
-      log "Sharing ${name} with the panel"
-    else
-      : > "$dest"
-      chmod 644 "$dest"
-      warn "${name} is not installed on the host. The panel will show it as missing."
-    fi
-  done
+prepare_host_dirs() {
+  mkdir -p /var/lib/amnezia-wg-quick /etc/amnezia/amneziawg
+  chmod 700 /var/lib/amnezia-wg-quick /etc/amnezia/amneziawg || true
 }
 
 start_panel() {
@@ -153,7 +133,7 @@ main() {
     PORT="$(ask_port "Panel TCP port" 51821 tcp)"
   fi
   install_docker
-  prepare_host_tools
+  prepare_host_dirs
   start_panel
   open_firewall "$PORT"
   summary

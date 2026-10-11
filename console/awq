@@ -626,7 +626,7 @@ def cmd_info(state):
         print()
         print(f"  {lime('1')}  Show QR code")
         print(f"  {lime('2')}  Show link")
-        print(f"  {lime('3')}  Show text config")
+        print(f"  {lime('3')}  Show settings")
         print(f"  {lime('4')}  Back")
         print()
         choice = ask("Choice: ")

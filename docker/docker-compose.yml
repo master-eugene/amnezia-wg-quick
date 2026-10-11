@@ -7,33 +7,33 @@ services:
       dockerfile: docker/Dockerfile
     image: amnezia-wg-quick:local
     restart: unless-stopped
+    network_mode: host
     pid: host
     cap_add:
-      - SYS_ADMIN
       - NET_ADMIN
+      - SYS_ADMIN
     security_opt:
       - apparmor:unconfined
+      - seccomp:unconfined
     user: "0:0"
-    ports:
-      - "${AWG_UI_PORT:-51821}:51821"
     environment:
-      PORT: "51821"
+      PORT: "${AWG_UI_PORT:-51821}"
       HOST: 0.0.0.0
       DATA_DIR: /data
       TRUST_PROXY: "${TRUST_PROXY:-0}"
       NODE_ENV: production
-      AWQ_USE_NSENTER: "1"
+      PATH: /usr/local/libexec/awq-host:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - panel-data:/data
-      - /var/lib/amnezia-wg-quick/host-tools/awg:/usr/local/bin/awg:ro
-      - /var/lib/amnezia-wg-quick/host-tools/awg-quick:/usr/local/bin/awg-quick:ro
+      - /var/lib/amnezia-wg-quick:/var/lib/amnezia-wg-quick
+      - /etc/amnezia/amneziawg:/etc/amnezia/amneziawg
     healthcheck:
       test:
         [
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:51821/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:' + process.env.PORT + '/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 10s
       timeout: 3s

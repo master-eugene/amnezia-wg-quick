@@ -69,18 +69,24 @@ function publicState(req) {
 }
 
 function hostCommand(command, args) {
-  if (process.env.AWQ_USE_NSENTER === "1") {
-    return spawnSync("nsenter", ["-t", "1", "-m", "-n", "--", command, ...args], {
-      encoding: "utf8",
-      timeout: 20000,
-    });
-  }
   return spawnSync(command, args, { encoding: "utf8", timeout: 20000 });
 }
 
 function commandExists(bin) {
-  const result = hostCommand("sh", ["-c", 'command -v "$1"', "sh", bin]);
-  return !result.error && result.status === 0 && (result.stdout || "").trim().length > 0;
+  const args = bin === "awg" ? ["show", "interfaces"] : [];
+  const result = spawnSync(bin, args, { encoding: "utf8", timeout: 8000 });
+  if (result.error) {
+    console.error(`${bin} probe failed: ${result.error.message}`);
+    return false;
+  }
+  if (bin === "awg") {
+    if (result.status !== 0) console.error(stripAnsi(result.stderr) || `${bin} probe exited ${result.status}`);
+    return result.status === 0;
+  }
+  const text = stripAnsi(`${result.stdout || ""}\n${result.stderr || ""}`);
+  const ok = /usage/i.test(text);
+  if (!ok) console.error(text || `${bin} probe exited ${result.status}`);
+  return ok;
 }
 
 function stripAnsi(text) {
@@ -111,6 +117,7 @@ function awqJson(args) {
   if (result.status !== 0) {
     const error = new Error(stderr || "Could not update clients.");
     error.status = result.status === 2 ? 400 : 500;
+    console.error(error.message);
     throw error;
   }
   if (stderr) payload.warning = stderr;
@@ -119,7 +126,12 @@ function awqJson(args) {
 
 function sendAwqError(res, error) {
   const status = error.status || 500;
-  res.status(status).json({ error: status === 500 ? "Could not update clients." : error.message });
+  const lines = String(error.message || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const picked = lines[0] && lines[0].startsWith("Traceback") ? lines[lines.length - 1] : lines[0];
+  res.status(status).json({ error: (picked || "Could not update clients.").slice(0, 240) });
 }
 
 function clientId(raw) {

@@ -166,13 +166,8 @@ EOF
       fi
       bash "$root/console/install.sh" --listen-port "$vpn"
       bash "$root/docker/install.sh" --port "$panel"
-      local ip published=""
+      local ip
       ip="$(primary_ip || true)"
-      published="$(docker compose -f "$root/docker/docker-compose.yml" port panel 51821 2>/dev/null || true)"
-      published="${published##*:}"
-      if [[ "$published" =~ ^[0-9]+$ ]]; then
-        panel="$published"
-      fi
       cat <<EOF
 
 AmneziaWG Quick is installed.
