@@ -59,9 +59,19 @@ fetch_project() {
   curl -fsSL "$base/console/install.sh" -o "$ROOT/console/install.sh" || true
 }
 
-listen_port() {
-  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server"]["listen_port"])' \
-    "$DATA_DIR/state.json"
+server_field() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server"][sys.argv[2]])' \
+    "$DATA_DIR/state.json" "$1"
+}
+
+check_interface() {
+  if awg show awg0 >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v journalctl >/dev/null 2>&1; then
+    journalctl -u awg-quick@awg0 -n 30 --no-pager >&2 || true
+  fi
+  die "The awg0 interface is not running, so clients cannot connect. Check the log above."
 }
 
 main() {
@@ -106,14 +116,19 @@ main() {
   listen="$(ask_port "AmneziaWG UDP port" 51820 udp "$listen")"
   log "Preparing the server"
   AWQ_LISTEN_PORT="$listen" "$BIN_PATH" --init
-  open_firewall "$(listen_port)" udp "AmneziaWG"
+  listen="$(server_field listen_port)"
+  open_firewall "$listen" udp "AmneziaWG"
+  check_interface
   cat <<EOF
 
 AmneziaWG Quick is installed.
 
-  Command  awq
+  Command   awq
+  Endpoint  $(server_field endpoint):${listen}/udp
 
 Run awq to open the client menu.
+Allow UDP ${listen} in your cloud provider's firewall or security group.
+If the endpoint is wrong, run: sudo AWQ_ENDPOINT=<public IP> awq --init
 
 EOF
 }

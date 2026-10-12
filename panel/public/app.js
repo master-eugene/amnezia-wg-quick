@@ -197,7 +197,7 @@ function showShare(client, mode, text, svg) {
     els.clientQr.hidden = true;
     els.clientQr.removeAttribute("src");
   }
-  els.clientCopy.hidden = false;
+  els.clientCopy.hidden = mode === "qr";
   els.clientCopy.textContent = mode === "link" ? "Copy link" : "Copy config";
   els.clientConfigWrap.hidden = false;
 }

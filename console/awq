@@ -8,6 +8,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import urllib.request
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,11 @@ LISTEN_PORT = 51820
 P = 2**255 - 19
 A24 = 121665
 BASE_POINT = bytes([9]) + bytes(31)
+PUBLIC_IP_URLS = (
+    "https://api.ipify.org",
+    "https://ipv4.icanhazip.com",
+    "https://checkip.amazonaws.com",
+)
 
 
 JSON_MODE = False
@@ -136,15 +142,40 @@ def command_exists(name):
     return shutil.which(name) is not None
 
 
-def detect_endpoint():
-    forced = os.environ.get("AWQ_ENDPOINT", "").strip()
-    if forced:
-        return forced
+def route_source_ipv4():
     result = run(["ip", "-4", "route", "get", "1.1.1.1"], capture_output=True)
     parts = (result.stdout or "").split()
     if result.returncode == 0 and "src" in parts:
         return parts[parts.index("src") + 1]
-    return "127.0.0.1"
+    return ""
+
+
+def lookup_public_ipv4():
+    for url in PUBLIC_IP_URLS:
+        try:
+            with urllib.request.urlopen(url, timeout=3) as response:
+                text = response.read(64).decode("ascii", "ignore").strip()
+        except (OSError, ValueError):
+            continue
+        if public_ipv4(text):
+            return text
+    return ""
+
+
+def forced_endpoint():
+    return os.environ.get("AWQ_ENDPOINT", "").strip()
+
+
+# Cloud servers behind NAT only see a private address on their own
+# interfaces, and a phone cannot reach that address.
+def detect_endpoint():
+    forced = forced_endpoint()
+    if forced:
+        return forced
+    local = route_source_ipv4()
+    if public_ipv4(local):
+        return local
+    return lookup_public_ipv4() or local or "127.0.0.1"
 
 
 def default_iface():
@@ -174,18 +205,25 @@ def as_int(value):
     return value if type(value) is int else None
 
 
-def public_ipv4(value):
+def ipv4_numbers(value):
     parts = str(value or "").strip().split(".")
     if len(parts) != 4:
-        return False
+        return None
     numbers = []
     for part in parts:
         if not part.isdigit() or (len(part) > 1 and part.startswith("0")):
-            return False
+            return None
         number = int(part)
         if number > 255:
-            return False
+            return None
         numbers.append(number)
+    return numbers
+
+
+def public_ipv4(value):
+    numbers = ipv4_numbers(value)
+    if numbers is None:
+        return False
     first, second = numbers[0], numbers[1]
     if first in (0, 10, 127) or first >= 224:
         return False
@@ -258,7 +296,11 @@ def repair_server(state):
         server.update(obfuscation_values())
         changed = True
     endpoint = str(server.get("endpoint") or "").strip()
-    if not public_ipv4(endpoint):
+    forced = forced_endpoint()
+    if forced and forced != endpoint:
+        server["endpoint"] = forced
+        changed = True
+    elif not endpoint or (ipv4_numbers(endpoint) is not None and not public_ipv4(endpoint)):
         detected = detect_endpoint()
         if public_ipv4(detected) and detected != endpoint:
             server["endpoint"] = detected
@@ -305,7 +347,7 @@ def load_state():
     if repair_server(state):
         save_state(state)
         apply_config(state)
-        say("Handshake settings were out of range for the AmneziaWG app. Import each client QR or config again.")
+        say(f"Server settings changed (endpoint {state['server']['endpoint']}). Import each client QR or config again.")
     return state
 
 
@@ -340,20 +382,18 @@ def render_server(state):
         f"H3 = {server['h3']}",
         f"H4 = {server['h4']}",
     ]
+    # Some cloud images ship iptables rules that reject every inbound port
+    # but SSH, and ufw or firewalld are not always present to open it.
+    rules = [
+        ("", f"INPUT -p udp --dport {server['listen_port']} -j ACCEPT"),
+        ("", f"FORWARD -i {IFACE} -j ACCEPT"),
+        ("", f"FORWARD -o {IFACE} -j ACCEPT"),
+    ]
     iface = default_iface()
     if iface:
-        lines.append(
-            "PostUp = "
-            f"iptables -A FORWARD -i {IFACE} -j ACCEPT; "
-            f"iptables -A FORWARD -o {IFACE} -j ACCEPT; "
-            f"iptables -t nat -A POSTROUTING -o {iface} -j MASQUERADE"
-        )
-        lines.append(
-            "PostDown = "
-            f"iptables -D FORWARD -i {IFACE} -j ACCEPT; "
-            f"iptables -D FORWARD -o {IFACE} -j ACCEPT; "
-            f"iptables -t nat -D POSTROUTING -o {iface} -j MASQUERADE"
-        )
+        rules.append(("-t nat ", f"POSTROUTING -o {iface} -j MASQUERADE"))
+    lines.append("PostUp = " + "; ".join(f"iptables {table}-I {rule}" for table, rule in rules))
+    lines.append("PostDown = " + "; ".join(f"iptables {table}-D {rule} || true" for table, rule in rules))
     for client in state["clients"]:
         if not client["enabled"]:
             continue
@@ -445,15 +485,31 @@ def restart_interface(path):
         say(red(started.stderr.strip() or "The interface did not start. Client records were saved."))
 
 
-def apply_config(state):
+def interface_section(text):
+    lines = []
+    for line in text.splitlines():
+        if line.strip() == "[Peer]":
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+# syncconf only updates keys and peers. PostUp rules and a changed port
+# need a full restart to reach the running interface.
+def apply_config(state, restart=False):
+    path = conf_path()
+    try:
+        before = path.read_text()
+    except OSError:
+        before = ""
     write_conf(state)
     if not command_exists("awg") or not command_exists("awg-quick"):
         return
-    path = conf_path()
     if interface_up():
         current = running_listen_port()
         wanted = int(state["server"]["listen_port"])
-        if current is not None and current != wanted:
+        changed = interface_section(before) != interface_section(render_server(state))
+        if restart or changed or (current is not None and current != wanted):
             restart_interface(path)
             return
         stripped = run(["awg-quick", "strip", str(path)], capture_output=True)
@@ -945,7 +1001,7 @@ def main(argv):
         if chosen is not None and state["server"].get("listen_port") != chosen:
             state["server"]["listen_port"] = chosen
             save_state(state)
-        apply_config(state)
+        apply_config(state, restart=True)
         return 0
     menu(state)
     return 0
