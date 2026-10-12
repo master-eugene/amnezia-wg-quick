@@ -240,7 +240,7 @@ function paintClients(clients) {
     link.addEventListener("click", () => openShare(client, "link"));
     config.addEventListener("click", () => openShare(client, "config"));
     change.addEventListener("click", () => startRename(item, client));
-    access.addEventListener("click", () => setAccess(client, !client.enabled));
+    access.addEventListener("click", () => setAccess(client, !client.enabled, access));
     remove.addEventListener("click", () => startRemove(actions, client));
     actions.append(qr, link, config, change, access, remove);
     item.append(top, meta, actions);
@@ -304,8 +304,24 @@ function startRemove(actions, client) {
   actions.append(prompt, confirm, cancel);
 }
 
-async function setAccess(client, enabled) {
+function markUpdating(button) {
+  const item = button.closest(".client");
+  const badge = item.querySelector("[data-state]");
+  const led = document.createElement("span");
+  led.className = "led";
+  led.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.textContent = "Updating…";
+  badge.dataset.state = "wait";
+  badge.replaceChildren(led, label);
+  item.setAttribute("aria-busy", "true");
+  for (const control of item.querySelectorAll("button")) control.disabled = true;
+  button.textContent = "Updating…";
+}
+
+async function setAccess(client, enabled, button) {
   setAlert(els.clientError, "");
+  markUpdating(button);
   try {
     await api(`/api/clients/${client.id}`, {
       method: "PATCH",
@@ -314,6 +330,7 @@ async function setAccess(client, enabled) {
     await loadClients();
   } catch (error) {
     setAlert(els.clientError, humanError(error));
+    await loadClients();
   }
 }
 

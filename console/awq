@@ -158,11 +158,112 @@ def default_iface():
     return ""
 
 
+# The iOS app stores headers in a signed 32-bit value. 1, 2, 3, and 4 turn
+# that header off, and a value above 2147483647 does not match the kernel.
+H_MIN = 5
+H_MAX = 2147483647
+INIT_PACKET = 148
+RESPONSE_PACKET = 92
+
+
+def rand_below(limit):
+    return int.from_bytes(os.urandom(4), "little") % limit
+
+
+def as_int(value):
+    return value if type(value) is int else None
+
+
+def public_ipv4(value):
+    parts = str(value or "").strip().split(".")
+    if len(parts) != 4:
+        return False
+    numbers = []
+    for part in parts:
+        if not part.isdigit() or (len(part) > 1 and part.startswith("0")):
+            return False
+        number = int(part)
+        if number > 255:
+            return False
+        numbers.append(number)
+    first, second = numbers[0], numbers[1]
+    if first in (0, 10, 127) or first >= 224:
+        return False
+    if first == 100 and 64 <= second <= 127:
+        return False
+    if first == 169 and second == 254:
+        return False
+    if first == 172 and 16 <= second <= 31:
+        return False
+    if first == 192 and second == 168:
+        return False
+    return True
+
+
 def distinct_h():
     values = set()
+    span = H_MAX - H_MIN + 1
     while len(values) < 4:
-        values.add(int.from_bytes(os.urandom(4), "little") | 1)
+        values.add(H_MIN + rand_below(span))
     return list(values)
+
+
+def prefix_sizes():
+    while True:
+        s1 = 15 + rand_below(135)
+        s2 = 15 + rand_below(135)
+        if s1 != s2 and s1 + INIT_PACKET != s2 + RESPONSE_PACKET:
+            return s1, s2
+
+
+def obfuscation_values():
+    h1, h2, h3, h4 = distinct_h()
+    s1, s2 = prefix_sizes()
+    return {
+        "jc": 4 + rand_below(3),
+        "jmin": 10,
+        "jmax": 50,
+        "s1": s1,
+        "s2": s2,
+        "h1": h1,
+        "h2": h2,
+        "h3": h3,
+        "h4": h4,
+    }
+
+
+def obfuscation_ok(server):
+    headers = [as_int(server.get(name)) for name in ("h1", "h2", "h3", "h4")]
+    if any(value is None or value < H_MIN or value > H_MAX for value in headers):
+        return False
+    if len(set(headers)) != 4:
+        return False
+    s1, s2 = as_int(server.get("s1")), as_int(server.get("s2"))
+    if s1 is None or s2 is None or not (15 <= s1 <= 149 and 15 <= s2 <= 149):
+        return False
+    if s1 == s2 or s1 + INIT_PACKET == s2 + RESPONSE_PACKET:
+        return False
+    jc, jmin, jmax = as_int(server.get("jc")), as_int(server.get("jmin")), as_int(server.get("jmax"))
+    if jc is None or not 1 <= jc <= 128:
+        return False
+    if jmin is None or jmax is None or not 1 <= jmin < jmax <= 1280:
+        return False
+    return True
+
+
+def repair_server(state):
+    server = state["server"]
+    changed = False
+    if not obfuscation_ok(server):
+        server.update(obfuscation_values())
+        changed = True
+    endpoint = str(server.get("endpoint") or "").strip()
+    if not public_ipv4(endpoint):
+        detected = detect_endpoint()
+        if public_ipv4(detected) and detected != endpoint:
+            server["endpoint"] = detected
+            changed = True
+    return changed
 
 
 def listen_port_from_env():
@@ -179,34 +280,18 @@ def listen_port_from_env():
 
 def new_state():
     private, public = keypair()
-    h1, h2, h3, h4 = distinct_h()
-    s1 = 15 + (os.urandom(1)[0] % 100)
-    s2 = 15 + (os.urandom(1)[0] % 100)
-    if s2 == s1:
-        s2 = s1 + 17
-    return {
-        "version": 1,
-        "server": {
-            "private_key": private,
-            "public_key": public,
-            "address": SERVER_ADDRESS,
-            "listen_port": listen_port_from_env() or LISTEN_PORT,
-            "endpoint": detect_endpoint(),
-            "dns": "1.1.1.1",
-            "jc": 4,
-            "jmin": 40,
-            "jmax": 70,
-            "s1": s1,
-            "s2": s2,
-            "h1": h1,
-            "h2": h2,
-            "h3": h3,
-            "h4": h4,
-            "next_ip": 2,
-            "next_id": 1,
-        },
-        "clients": [],
+    server = {
+        "private_key": private,
+        "public_key": public,
+        "address": SERVER_ADDRESS,
+        "listen_port": listen_port_from_env() or LISTEN_PORT,
+        "endpoint": detect_endpoint(),
+        "dns": "1.1.1.1",
+        "next_ip": 2,
+        "next_id": 1,
     }
+    server.update(obfuscation_values())
+    return {"version": 1, "server": server, "clients": []}
 
 
 def load_state():
@@ -216,7 +301,12 @@ def load_state():
         save_state(state)
         apply_config(state)
         return state
-    return json.loads(path.read_text())
+    state = json.loads(path.read_text())
+    if repair_server(state):
+        save_state(state)
+        apply_config(state)
+        say("Handshake settings were out of range for the AmneziaWG app. Import each client QR or config again.")
+    return state
 
 
 def save_state(state):
@@ -287,6 +377,7 @@ def render_client(state, client):
             f"PrivateKey = {client['private_key']}",
             f"Address = {client['address']}",
             f"DNS = {server['dns']}",
+            "MTU = 1280",
             f"Jc = {server['jc']}",
             f"Jmin = {server['jmin']}",
             f"Jmax = {server['jmax']}",
@@ -300,7 +391,7 @@ def render_client(state, client):
             "[Peer]",
             f"PublicKey = {server['public_key']}",
             f"Endpoint = {server['endpoint']}:{server['listen_port']}",
-            "AllowedIPs = 0.0.0.0/0",
+            "AllowedIPs = 0.0.0.0/0, ::/0",
             "PersistentKeepalive = 25",
             "",
         ]
@@ -551,7 +642,7 @@ def client_link(state, client):
         "client_priv_key": client["private_key"],
         "client_ip": client["address"],
         "server_pub_key": server["public_key"],
-        "allowed_ips": ["0.0.0.0/0"],
+        "allowed_ips": ["0.0.0.0/0", "::/0"],
         "persistent_keep_alive": "25",
         "Jc": str(server["jc"]),
         "Jmin": str(server["jmin"]),
