@@ -441,10 +441,12 @@ def find_client(state, raw):
     return None
 
 
-def pick_client(state):
+def pick_client(state, heading):
     if not state["clients"]:
         print("No clients yet.")
         return None
+    print(bold(heading))
+    print()
     print_clients(state)
     print()
     raw = ask("Client id (empty to go back): ")
@@ -499,15 +501,38 @@ def cmd_add(state):
     print(lime(f"Added {name} (id {client['id']}), enabled."))
 
 
-def cmd_status(state):
-    print()
-    client = pick_client(state)
-    if client is None:
+def set_client_enabled(state, client, enabled):
+    if client["enabled"] == enabled:
+        print(f"{client['name']} is already {status_word(client)}.")
         return
-    client["enabled"] = not client["enabled"]
+    client["enabled"] = enabled
     save_state(state)
     apply_config(state)
     print(lime(f"{client['name']} is now {status_word(client)}."))
+
+
+def cmd_status(state):
+    print()
+    client = pick_client(state, "Change status")
+    if client is None:
+        return
+    while True:
+        print()
+        print(bold(f"{client['name']} · id {client['id']} · {status_word(client)}"))
+        print()
+        print(f"  {lime('1')}  Enable")
+        print(f"  {lime('2')}  Disable")
+        print(f"  {lime('3')}  Back")
+        print()
+        choice = ask("Choice: ")
+        if choice == "1":
+            set_client_enabled(state, client, True)
+        elif choice == "2":
+            set_client_enabled(state, client, False)
+        elif choice == "3" or choice == "":
+            return
+        else:
+            print(red("Choose 1, 2, or 3."))
 
 
 def qcompress(data):
@@ -617,7 +642,7 @@ def show_qr(state, client):
 
 def cmd_info(state):
     print()
-    client = pick_client(state)
+    client = pick_client(state, "Client info")
     if client is None:
         return
     while True:
@@ -644,7 +669,7 @@ def cmd_info(state):
 
 def cmd_remove(state):
     print()
-    client = pick_client(state)
+    client = pick_client(state, "Remove client")
     if client is None:
         return
     print()

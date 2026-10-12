@@ -23,26 +23,6 @@
       </header>
 
       <main class="layout">
-        <section class="intro">
-          <p class="eyebrow" id="eyebrow">Host panel</p>
-          <h1 id="title">Checking this host</h1>
-          <p class="lede" id="lede">Looking up whether an admin account already exists.</p>
-          <dl class="specs">
-            <div>
-              <dt>Machine</dt>
-              <dd id="spec-machine">…</dd>
-            </div>
-            <div>
-              <dt>Address</dt>
-              <dd id="spec-address"></dd>
-            </div>
-            <div>
-              <dt>Account</dt>
-              <dd id="spec-account">Checking</dd>
-            </div>
-          </dl>
-        </section>
-
         <section class="panel" aria-live="polite">
           <p class="loading" id="loading">
             <span class="led" aria-hidden="true"></span>
@@ -117,6 +97,10 @@
             <ul class="clients" id="client-list"></ul>
             <div id="client-config-wrap" hidden>
               <p class="signed-label" id="client-config-label">Config</p>
+              <p class="loading" id="client-share-loading" hidden>
+                <span class="led" aria-hidden="true"></span>
+                <span id="client-share-loading-text">Preparing…</span>
+              </p>
               <img id="client-qr" class="qr" alt="Client QR code" hidden />
               <pre class="config" id="client-config"></pre>
               <button class="secondary" id="client-copy" type="button">Copy config</button>

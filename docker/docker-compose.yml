@@ -8,13 +8,10 @@ services:
     image: amnezia-wg-quick:local
     restart: unless-stopped
     network_mode: host
-    pid: host
     cap_add:
       - NET_ADMIN
-      - SYS_ADMIN
     security_opt:
       - apparmor:unconfined
-      - seccomp:unconfined
     user: "0:0"
     environment:
       PORT: "${AWG_UI_PORT:-51821}"
@@ -27,6 +24,7 @@ services:
       - panel-data:/data
       - /var/lib/amnezia-wg-quick:/var/lib/amnezia-wg-quick
       - /etc/amnezia/amneziawg:/etc/amnezia/amneziawg
+      - /:/host:ro
     healthcheck:
       test:
         [

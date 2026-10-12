@@ -89,6 +89,18 @@ prepare_host_dirs() {
   chmod 700 /var/lib/amnezia-wg-quick /etc/amnezia/amneziawg || true
 }
 
+install_qrencode() {
+  command -v qrencode >/dev/null 2>&1 && return 0
+  log "Installing qrencode"
+  if [[ "$PKG" == apt ]]; then
+    apt-get update
+    apt_install qrencode
+  else
+    dnf install -y qrencode
+  fi
+  command -v qrencode >/dev/null 2>&1 || die "qrencode is still not installed."
+}
+
 start_panel() {
   [[ -f "$COMPOSE_FILE" ]] || die "docker/docker-compose.yml is missing."
   [[ -f "$ROOT/docker/Dockerfile" ]] || die "docker/Dockerfile is missing."
@@ -133,6 +145,7 @@ main() {
     PORT="$(ask_port "Panel TCP port" 51821 tcp)"
   fi
   install_docker
+  install_qrencode
   prepare_host_dirs
   start_panel
   open_firewall "$PORT"

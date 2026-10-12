@@ -75,18 +75,16 @@ function hostCommand(command, args) {
 function commandExists(bin) {
   const args = bin === "awg" ? ["show", "interfaces"] : [];
   const result = spawnSync(bin, args, { encoding: "utf8", timeout: 8000 });
+  const text = stripAnsi(`${result.stdout || ""}\n${result.stderr || ""}`);
   if (result.error) {
     console.error(`${bin} probe failed: ${result.error.message}`);
-    return false;
+    const detail = result.error.code === "ENOENT" ? "" : result.error.message;
+    return { installed: false, detail };
   }
-  if (bin === "awg") {
-    if (result.status !== 0) console.error(stripAnsi(result.stderr) || `${bin} probe exited ${result.status}`);
-    return result.status === 0;
-  }
-  const text = stripAnsi(`${result.stdout || ""}\n${result.stderr || ""}`);
-  const ok = /usage/i.test(text);
-  if (!ok) console.error(text || `${bin} probe exited ${result.status}`);
-  return ok;
+  const installed = bin === "awg" ? result.status === 0 : /usage/i.test(text);
+  if (!installed) console.error(text || `${bin} probe exited ${result.status}`);
+  const detail = text.split("\n").map((line) => line.trim()).find(Boolean) || "";
+  return { installed, detail: installed ? "" : detail.slice(0, 200) };
 }
 
 function stripAnsi(text) {
@@ -247,12 +245,14 @@ api.get("/clients/:id/config", (req, res) => {
 
 api.get("/status", (req, res) => {
   if (!requireUser(req, res)) return;
-  res.json({
-    tools: [
-      { id: "awg", label: "awg", installed: commandExists("awg") },
-      { id: "awg-quick", label: "awg-quick", installed: commandExists("awg-quick") },
-    ],
+  const tools = [
+    ["awg", "awg"],
+    ["awg-quick", "awg-quick"],
+  ].map(([id, bin]) => {
+    const probe = commandExists(bin);
+    return { id, label: id, installed: probe.installed, detail: probe.detail };
   });
+  res.json({ tools });
 });
 
 api.post("/setup", (req, res) => {

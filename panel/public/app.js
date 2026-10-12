@@ -1,38 +1,24 @@
 const copy = {
   loading: {
     step: "Checking",
-    eyebrow: "Host panel",
     title: "Checking this host",
-    lede: "Looking up whether an admin account already exists.",
   },
   setup: {
     step: "01  Account",
-    eyebrow: "First run",
     title: "Create the admin account",
-    lede: "One account opens this panel. Use a long password and keep it somewhere you can find again.",
   },
   login: {
     step: "Sign in",
-    eyebrow: "Welcome back",
     title: "Authorize this browser",
-    lede: "Enter the admin account for this host. A successful sign-in lasts 12 hours.",
   },
   session: {
     step: "Clients",
-    eyebrow: "Panel",
-    title: "Manage clients",
-    lede: "Create a client, change the name or access, or remove someone who should no longer connect.",
+    title: "Clients",
   },
 };
 
 const els = {
   step: document.querySelector("#step-label"),
-  eyebrow: document.querySelector("#eyebrow"),
-  title: document.querySelector("#title"),
-  lede: document.querySelector("#lede"),
-  machine: document.querySelector("#spec-machine"),
-  address: document.querySelector("#spec-address"),
-  account: document.querySelector("#spec-account"),
   loading: document.querySelector("#loading"),
   banner: document.querySelector("#banner"),
   setup: document.querySelector("#setup-form"),
@@ -49,12 +35,11 @@ const els = {
   clientConfig: document.querySelector("#client-config"),
   clientQr: document.querySelector("#client-qr"),
   clientCopy: document.querySelector("#client-copy"),
+  shareLoading: document.querySelector("#client-share-loading"),
+  shareLoadingText: document.querySelector("#client-share-loading-text"),
   statusList: document.querySelector("#status-list"),
   toolHint: document.querySelector("#tool-hint"),
-  layout: document.querySelector(".layout"),
 };
-
-els.address.textContent = location.host;
 
 document.querySelectorAll("[data-toggle]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -102,15 +87,11 @@ async function api(path, options = {}) {
 function applyCopy(view) {
   const text = copy[view];
   els.step.textContent = text.step;
-  els.eyebrow.textContent = text.eyebrow;
-  els.title.textContent = text.title;
-  els.lede.textContent = text.lede;
   document.title = `${text.title} · AmneziaWG Quick`;
 }
 
 function show(view) {
   applyCopy(view);
-  els.layout.classList.toggle("wide", view === "session");
   els.loading.hidden = view !== "loading";
   els.setup.hidden = view !== "setup";
   els.login.hidden = view !== "login";
@@ -118,22 +99,6 @@ function show(view) {
   if (view === "setup") document.querySelector("#setup-username").focus();
   if (view === "login") document.querySelector("#login-username").focus();
   if (view !== "session") hideConfig();
-}
-
-function paintAccount(state) {
-  els.machine.textContent = state?.host || "This machine";
-  if (state?.user) {
-    els.account.textContent = "Signed in";
-    els.account.dataset.state = "in";
-    return;
-  }
-  if (state?.needsSetup) {
-    els.account.textContent = "Not created";
-    els.account.dataset.state = "missing";
-    return;
-  }
-  els.account.textContent = "Created";
-  els.account.dataset.state = "ready";
 }
 
 function clearSecrets() {
@@ -185,10 +150,12 @@ function hideConfig() {
   delete els.clientConfigWrap.dataset.clientId;
   delete els.clientConfigWrap.dataset.mode;
   els.clientConfigWrap.hidden = true;
+  els.shareLoading.hidden = true;
   els.clientConfig.hidden = false;
   els.clientConfig.textContent = "";
   els.clientQr.hidden = true;
   els.clientQr.removeAttribute("src");
+  els.clientCopy.hidden = false;
 }
 
 function shareTitle(mode) {
@@ -197,10 +164,30 @@ function shareTitle(mode) {
   return "config";
 }
 
+function shareLoadingText(mode) {
+  if (mode === "qr") return "Drawing the QR code…";
+  if (mode === "link") return "Preparing the link…";
+  return "Preparing the config…";
+}
+
+function showShareLoading(client, mode) {
+  els.clientConfigWrap.dataset.clientId = String(client.id);
+  els.clientConfigWrap.dataset.mode = mode;
+  els.clientConfigLabel.textContent = `${client.name} ${shareTitle(mode)}`;
+  els.shareLoadingText.textContent = shareLoadingText(mode);
+  els.shareLoading.hidden = false;
+  els.clientConfig.hidden = true;
+  els.clientQr.hidden = true;
+  els.clientQr.removeAttribute("src");
+  els.clientCopy.hidden = true;
+  els.clientConfigWrap.hidden = false;
+}
+
 function showShare(client, mode, text, svg) {
   els.clientConfigWrap.dataset.clientId = String(client.id);
   els.clientConfigWrap.dataset.mode = mode;
   els.clientConfigLabel.textContent = `${client.name} ${shareTitle(mode)}`;
+  els.shareLoading.hidden = true;
   els.clientConfig.textContent = text;
   els.clientConfig.hidden = mode === "qr";
   if (mode === "qr" && svg) {
@@ -210,6 +197,7 @@ function showShare(client, mode, text, svg) {
     els.clientQr.hidden = true;
     els.clientQr.removeAttribute("src");
   }
+  els.clientCopy.hidden = false;
   els.clientCopy.textContent = mode === "link" ? "Copy link" : "Copy config";
   els.clientConfigWrap.hidden = false;
 }
@@ -329,27 +317,70 @@ async function setAccess(client, enabled) {
   }
 }
 
+let shareToken = 0;
+
 async function openShare(client, mode) {
+  const token = ++shareToken;
   setAlert(els.clientError, "");
+  showShareLoading(client, mode);
   try {
     const result = await api(`/api/clients/${client.id}/config`);
+    if (token !== shareToken) return;
     const owner = result.client || client;
-    if (mode === "qr") {
-      if (!result.qr) {
-        setAlert(els.clientError, "qrencode is not installed, so the QR code cannot be drawn.");
-        return;
-      }
-      showShare(owner, "qr", result.config || "", result.qr);
+    if (mode === "qr" && !result.qr) {
+      hideConfig();
+      setAlert(els.clientError, "qrencode is not installed, so the QR code cannot be drawn.");
       return;
     }
     if (mode === "link") {
       showShare(owner, "link", result.link || "", "");
       return;
     }
+    if (mode === "qr") {
+      showShare(owner, "qr", result.config || "", result.qr);
+      return;
+    }
     showShare(owner, "config", result.config || "", "");
   } catch (error) {
+    if (token !== shareToken) return;
+    hideConfig();
     setAlert(els.clientError, humanError(error));
   }
+}
+
+function copyTextNow(text) {
+  let ok = false;
+  const onCopy = (event) => {
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", text);
+    ok = true;
+  };
+  document.addEventListener("copy", onCopy);
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "0";
+  area.style.left = "0";
+  area.style.width = "1px";
+  area.style.height = "1px";
+  area.style.padding = "0";
+  area.style.border = "none";
+  area.style.outline = "none";
+  area.style.boxShadow = "none";
+  area.style.background = "transparent";
+  document.body.append(area);
+  area.focus();
+  area.select();
+  area.setSelectionRange(0, area.value.length);
+  try {
+    ok = document.execCommand("copy") || ok;
+  } catch {
+    ok = false;
+  }
+  document.removeEventListener("copy", onCopy);
+  area.remove();
+  return ok;
 }
 
 async function loadClients() {
@@ -366,7 +397,6 @@ async function loadClients() {
 }
 
 async function enterSession(state) {
-  paintAccount(state);
   show("session");
   clearSecrets();
   setAlert(els.clientError, "");
@@ -394,8 +424,9 @@ async function enterSession(state) {
       if (!tool.installed) missing.push(tool.label);
     }
     if (missing.length) {
+      const detail = status.tools.map((tool) => tool.detail).find(Boolean);
       els.toolHint.hidden = false;
-      els.toolHint.textContent = "AmneziaWG tools are not available in this environment.";
+      els.toolHint.textContent = detail || "AmneziaWG tools are not available in this environment.";
     }
   } catch (error) {
     const item = document.createElement("li");
@@ -406,7 +437,6 @@ async function enterSession(state) {
 
 function render(state) {
   setAlert(els.banner, "");
-  paintAccount(state);
   if (state.user) {
     enterSession(state);
     return;
@@ -507,11 +537,17 @@ document.querySelector("#client-add").addEventListener("submit", async (event) =
 
 document.querySelector("#client-copy").addEventListener("click", async () => {
   const button = document.querySelector("#client-copy");
-  try {
-    await navigator.clipboard.writeText(els.clientConfig.textContent);
-    button.textContent = "Copied";
-  } catch {
-    button.textContent = "Copy failed";
+  const text = els.clientConfig.textContent;
+  const copied = copyTextNow(text);
+  if (!copied && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      button.textContent = "Copied";
+    } catch {
+      button.textContent = "Copy failed";
+    }
+  } else {
+    button.textContent = copied ? "Copied" : "Copy failed";
   }
   setTimeout(() => {
     button.textContent = els.clientConfigWrap.dataset.mode === "link" ? "Copy link" : "Copy config";

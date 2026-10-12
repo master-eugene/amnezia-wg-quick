@@ -11,7 +11,7 @@ COPY console/awq /usr/local/bin/awq
 COPY docker/host-tool.sh /usr/local/libexec/awq-host/awg
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 util-linux \
+  && apt-get install -y --no-install-recommends python3 qrencode \
   && rm -rf /var/lib/apt/lists/* \
   && chmod 755 /usr/local/bin/awq /usr/local/libexec/awq-host/awg \
   && cp /usr/local/libexec/awq-host/awg /usr/local/libexec/awq-host/awg-quick \
